@@ -2,8 +2,6 @@ package com.studyassistant.security;
 
 import com.studyassistant.entity.Role;
 import com.studyassistant.entity.User;
-import lombok.AllArgsConstructor;
-import lombok.Getter;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.userdetails.UserDetails;
@@ -12,8 +10,6 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.UUID;
 
-@Getter
-@AllArgsConstructor
 public class UserPrincipal implements UserDetails {
 
     private final UUID id;
@@ -22,6 +18,22 @@ public class UserPrincipal implements UserDetails {
     private final String fullName;
     private final Role role;
     private final Collection<? extends GrantedAuthority> authorities;
+
+    public UserPrincipal(
+        UUID id,
+        String email,
+        String password,
+        String fullName,
+        Role role,
+        Collection<? extends GrantedAuthority> authorities
+    ) {
+        this.id = id;
+        this.email = email;
+        this.password = password;
+        this.fullName = fullName;
+        this.role = role;
+        this.authorities = authorities;
+    }
 
     public static UserPrincipal create(User user) {
         SimpleGrantedAuthority authority = new SimpleGrantedAuthority(user.getRole().name());
@@ -33,6 +45,27 @@ public class UserPrincipal implements UserDetails {
             user.getRole(),
             Collections.singletonList(authority)
         );
+    }
+
+    public UUID getId() {
+        return id;
+    }
+
+    public String getEmail() {
+        return email;
+    }
+
+    public String getFullName() {
+        return fullName;
+    }
+
+    public Role getRole() {
+        return role;
+    }
+
+    @Override
+    public Collection<? extends GrantedAuthority> getAuthorities() {
+        return authorities;
     }
 
     @Override
