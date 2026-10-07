@@ -180,6 +180,247 @@ interface SystemStatus {
   generation_model: string;
 }
 
+// --- Formatted Message Renderer (Strips raw markdown hashes, underline decorations & quotes) ---
+
+function cleanHeadingText(text: string): string {
+  let cleaned = text.trim();
+  cleaned = cleaned.replace(/^#+\s*/, "");
+  for (let i = 0; i < 3; i++) {
+    cleaned = cleaned.trim();
+    cleaned = cleaned.replace(/^["'“”«»]+|["'“”«»]+$/g, "");
+    cleaned = cleaned.replace(/^\*\*+|\*\*+$/g, "");
+    cleaned = cleaned.replace(/^__+|__+$/g, "");
+    cleaned = cleaned.replace(/^\*+|\*+$/g, "");
+  }
+  return cleaned.trim();
+}
+
+function renderInlineTokens(
+  text: string,
+  onCitationClick?: (source: string) => void
+): React.ReactNode[] {
+  const tokenRegex = /(\[(?:Source:)[^\]]+\]|\(Source:[^)]+\)|\*\*[^*]+\*\*|`[^`]+`|\*[^*]+\*)/gi;
+  const parts = text.split(tokenRegex);
+
+  return parts.map((part, idx) => {
+    if (!part) return null;
+
+    // 1. Inline Citation Badge [Source: ...] or (Source: ...)
+    const isBracketCit = part.startsWith("[Source:") && part.endsWith("]");
+    const isParenCit = part.startsWith("(Source:") && part.endsWith(")");
+    if (isBracketCit || isParenCit) {
+      const citationContent = part.slice(1, -1).trim();
+      const match = citationContent.match(/Source:\s*([^,|\])]+)(?:[,|]\s*(?:Page:?|p\.?)\s*([^\])]+))?/i);
+      let displayLabel = citationContent.replace(/^Source:\s*/i, "");
+      if (match) {
+        const file = match[1].trim();
+        const page = match[2]?.trim();
+        displayLabel = page ? `${file} (p. ${page})` : file;
+      }
+
+      return (
+        <span
+          key={`cit-${idx}`}
+          className="citation-inline-badge"
+          title={citationContent}
+          onClick={(e) => {
+            e.stopPropagation();
+            if (onCitationClick) onCitationClick(citationContent);
+          }}
+        >
+          <IconBook />
+          <span>{displayLabel}</span>
+        </span>
+      );
+    }
+
+    // 2. Bold (strip decorative quotes inside bold like **"Logic"**)
+    if (part.startsWith("**") && part.endsWith("**") && part.length >= 4) {
+      let boldContent = part.slice(2, -2).trim();
+      boldContent = boldContent.replace(/^["'“”«»]+|["'“”«»]+$/g, "");
+      return <strong key={`b-${idx}`}>{boldContent}</strong>;
+    }
+
+    // 3. Inline Code
+    if (part.startsWith("`") && part.endsWith("`") && part.length >= 2) {
+      return <code key={`code-${idx}`}>{part.slice(1, -1)}</code>;
+    }
+
+    // 4. Italic
+    if (part.startsWith("*") && part.endsWith("*") && part.length >= 2) {
+      return <em key={`em-${idx}`}>{part.slice(1, -1)}</em>;
+    }
+
+    // 5. Plain text
+    return <React.Fragment key={`txt-${idx}`}>{part}</React.Fragment>;
+  });
+}
+
+function FormattedMessage({
+  text,
+  onCitationClick,
+}: {
+  text: string;
+  onCitationClick?: (source: string) => void;
+}) {
+  if (!text) return null;
+
+  const lines = text.split("\n");
+  const nodes: React.ReactNode[] = [];
+  let currentList: { type: "ul" | "ol"; items: string[] } | null = null;
+  let paragraphBuffer: string[] = [];
+  let inCodeBlock = false;
+  let codeBuffer: string[] = [];
+
+  const flushParagraph = () => {
+    if (paragraphBuffer.length > 0) {
+      const pText = paragraphBuffer.join(" ").trim();
+      if (pText) {
+        nodes.push(
+          <p key={`p-${nodes.length}`}>
+            {renderInlineTokens(pText, onCitationClick)}
+          </p>
+        );
+      }
+      paragraphBuffer = [];
+    }
+  };
+
+  const flushList = () => {
+    if (currentList) {
+      const ListTag = currentList.type;
+      const listItems = currentList.items;
+      nodes.push(
+        <ListTag key={`list-${nodes.length}`}>
+          {listItems.map((item, idx) => (
+            <li key={idx}>{renderInlineTokens(item, onCitationClick)}</li>
+          ))}
+        </ListTag>
+      );
+      currentList = null;
+    }
+  };
+
+  const flushAll = () => {
+    flushParagraph();
+    flushList();
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const rawLine = lines[i];
+    const trimmed = rawLine.trim();
+
+    // Code block fences
+    if (trimmed.startsWith("```")) {
+      if (inCodeBlock) {
+        nodes.push(
+          <pre key={`pre-${nodes.length}`}>
+            <code>{codeBuffer.join("\n")}</code>
+          </pre>
+        );
+        codeBuffer = [];
+        inCodeBlock = false;
+      } else {
+        flushAll();
+        inCodeBlock = true;
+      }
+      continue;
+    }
+
+    if (inCodeBlock) {
+      codeBuffer.push(rawLine);
+      continue;
+    }
+
+    // Check Setext Underlines on the NEXT line (=== or ---)
+    const nextLine = i + 1 < lines.length ? lines[i + 1].trim() : "";
+    const isSetextH1 = /^={3,}$/.test(nextLine);
+    const isSetextH2 = /^-{3,}$/.test(nextLine);
+
+    if (trimmed && (isSetextH1 || isSetextH2)) {
+      flushAll();
+      const cleanHeader = cleanHeadingText(trimmed);
+      if (isSetextH1) {
+        nodes.push(<h2 key={`h2-${nodes.length}`}>{cleanHeader}</h2>);
+      } else {
+        nodes.push(<h3 key={`h3-${nodes.length}`}>{cleanHeader}</h3>);
+      }
+      i++; // Skip underline line
+      continue;
+    }
+
+    // Solitary horizontal separator lines (====, ----, ____, ****)
+    if (/^([=\-_*])\1{2,}$/.test(trimmed)) {
+      flushAll();
+      nodes.push(<hr key={`hr-${nodes.length}`} />);
+      continue;
+    }
+
+    // Empty lines flush paragraphs and lists
+    if (!trimmed) {
+      flushAll();
+      continue;
+    }
+
+    // ATX Headers (#, ##, ###, ####)
+    const headerMatch = trimmed.match(/^(#{1,6})\s+(.*)$/);
+    if (headerMatch) {
+      flushAll();
+      const level = headerMatch[1].length;
+      const cleanTitle = cleanHeadingText(headerMatch[2]);
+      if (level <= 2) {
+        nodes.push(<h2 key={`h-${nodes.length}`}>{cleanTitle}</h2>);
+      } else if (level === 3) {
+        nodes.push(<h3 key={`h-${nodes.length}`}>{cleanTitle}</h3>);
+      } else {
+        nodes.push(<h4 key={`h-${nodes.length}`}>{cleanTitle}</h4>);
+      }
+      continue;
+    }
+
+    // Unordered list items (*, -, •)
+    const bulletMatch = trimmed.match(/^[*•-]\s+(.*)$/);
+    if (bulletMatch) {
+      flushParagraph();
+      if (!currentList || currentList.type !== "ul") {
+        flushList();
+        currentList = { type: "ul", items: [] };
+      }
+      currentList.items.push(bulletMatch[1]);
+      continue;
+    }
+
+    // Ordered list items (1., 2., etc.)
+    const orderedMatch = trimmed.match(/^\d+\.\s+(.*)$/);
+    if (orderedMatch) {
+      flushParagraph();
+      if (!currentList || currentList.type !== "ol") {
+        flushList();
+        currentList = { type: "ol", items: [] };
+      }
+      currentList.items.push(orderedMatch[1]);
+      continue;
+    }
+
+    // Regular text line -> buffer for paragraph
+    flushList();
+    paragraphBuffer.push(trimmed);
+  }
+
+  // Handle unclosed code block if streaming
+  if (inCodeBlock && codeBuffer.length > 0) {
+    nodes.push(
+      <pre key={`pre-${nodes.length}`}>
+        <code>{codeBuffer.join("\n")}</code>
+      </pre>
+    );
+  }
+
+  flushAll();
+
+  return <>{nodes}</>;
+}
+
 export default function StudyAssistantApp() {
   // Navigation tabs (RAG pipeline tab removed per requirement)
   const [activeTab, setActiveTab] = useState<"chat" | "materials" | "flashcards">("chat");
@@ -706,7 +947,24 @@ export default function StudyAssistantApp() {
                         <span>{msg.timestamp}</span>
                       </div>
 
-                      <div className="message-content">{msg.text}</div>
+                      <div className="message-content">
+                        {msg.sender === "user" ? (
+                          msg.text
+                        ) : (
+                          <FormattedMessage
+                            text={msg.text}
+                            onCitationClick={(src) => {
+                              const chunkMatch = msg.chunks?.find((c) => {
+                                const s = c.source || c.metadata?.source || "";
+                                return s && src.toLowerCase().includes(s.toLowerCase());
+                              });
+                              setSelectedCitation(
+                                chunkMatch || { source: src, preview: "Cited in generated response." }
+                              );
+                            }}
+                          />
+                        )}
+                      </div>
 
                       {/* Cited Sources List */}
                       {msg.sources && msg.sources.length > 0 && (
