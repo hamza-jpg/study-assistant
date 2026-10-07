@@ -1,6 +1,12 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  experimental: {
+    proxyClientMaxBodySize: "500mb",
+    serverActions: {
+      bodySizeLimit: "500mb",
+    },
+  },
   async rewrites() {
     const apiUrl = process.env.API_URL || "http://127.0.0.1:8000";
     return [
@@ -13,4 +19,3 @@ const nextConfig: NextConfig = {
 };
 
 export default nextConfig;
-
