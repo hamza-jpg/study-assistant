@@ -180,7 +180,7 @@ interface SystemStatus {
   generation_model: string;
 }
 
-// --- Formatted Message Renderer (Strips raw markdown hashes, underline decorations & quotes) ---
+// --- Gemini-Style Formatted Message Renderer ---
 
 function cleanHeadingText(text: string): string {
   let cleaned = text.trim();
@@ -195,9 +195,135 @@ function cleanHeadingText(text: string): string {
   return cleaned.trim();
 }
 
+function getCitationKey(cit: string): string {
+  const m = cit.match(/Source:\s*([^,|\])]+)(?:[,|]\s*(?:Page:?|p\.?)\s*([^\])]+))?/i);
+  if (m) {
+    const file = m[1].trim().toLowerCase();
+    const page = m[2] ? m[2].trim() : "";
+    return `${file}#${page}`;
+  }
+  return cit.trim().toLowerCase();
+}
+
+/**
+ * Automatically relocates any citations trapped inside the middle of a sentence
+ * or bullet item to the very end of that sentence/bullet, exactly like Gemini web.
+ */
+function moveCitationsToEndOfSentences(line: string): string {
+  const citRegex = /(\[(?:Source:|Document\s*\d+:?)[^\]]+\]|\(Source:[^)]+\))/gi;
+  if (!citRegex.test(line)) return line;
+
+  const isBullet = /^[*•-]\s+|^\d+\.\s+/.test(line);
+
+  if (isBullet) {
+    const citations: string[] = [];
+    const cleaned = line
+      .replace(citRegex, (match) => {
+        citations.push(match);
+        return "";
+      })
+      .replace(/\s{2,}/g, " ")
+      .replace(/\s+([.,;:])/g, "$1")
+      .trim();
+
+    if (citations.length === 0) return line;
+    return `${cleaned} ${citations.join(" ")}`;
+  }
+
+  // Paragraph sentence splitter without regex lookbehind dependency
+  const rawSentences = line.split(/([.?!]\s+)/);
+  const fullSentences: string[] = [];
+  for (let s = 0; s < rawSentences.length; s += 2) {
+    const sentText = rawSentences[s];
+    const sentDelim = rawSentences[s + 1] || "";
+    if (sentText || sentDelim) {
+      fullSentences.push(sentText + sentDelim);
+    }
+  }
+
+  const processed = fullSentences.map((sentence) => {
+    const citations: string[] = [];
+    const cleaned = sentence
+      .replace(citRegex, (match) => {
+        citations.push(match);
+        return "";
+      })
+      .replace(/\s{2,}/g, " ")
+      .replace(/\s+([.,;:])/g, "$1")
+      .trim();
+
+    if (citations.length === 0) return sentence;
+    return `${cleaned} ${citations.join(" ")}`;
+  });
+
+  return processed.join(" ");
+}
+
+/**
+ * Gemini-Style Citation Chip: Compact numbered pill in-line,
+ * with an interactive preview card on hover and click-to-view modal.
+ */
+function GeminiCitationChip({
+  citationNumber,
+  citationStr,
+  chunk,
+  onClick,
+}: {
+  citationNumber: number;
+  citationStr: string;
+  chunk?: any;
+  onClick: () => void;
+}) {
+  const [isHovered, setIsHovered] = useState(false);
+
+  const match = citationStr.match(/Source:\s*([^,|\])]+)(?:[,|]\s*(?:Page:?|p\.?)\s*([^\])]+))?/i);
+  const fileName = chunk?.source || (match ? match[1].trim() : "Course Material");
+  const pageNum = chunk?.page || (match && match[2] ? match[2].trim() : null);
+  const previewText =
+    chunk?.preview || chunk?.text || "Verified academic source document excerpt.";
+
+  return (
+    <span
+      className="gemini-citation-wrapper"
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+    >
+      <button
+        type="button"
+        className="gemini-citation-chip"
+        onClick={(e) => {
+          e.stopPropagation();
+          onClick();
+        }}
+        aria-label={`Source ${citationNumber}: ${fileName}`}
+      >
+        {citationNumber}
+      </button>
+
+      {isHovered && (
+        <span className="gemini-hover-card" onClick={(e) => e.stopPropagation()}>
+          <span className="hover-card-header">
+            <span className="hover-card-file">
+              <IconBook />
+              <span title={fileName}>{fileName}</span>
+            </span>
+            {pageNum && <span className="hover-card-page">p. {pageNum}</span>}
+          </span>
+          <span className="hover-card-preview">{previewText}</span>
+          <span className="hover-card-footer" onClick={onClick}>
+            Click to inspect source &rarr;
+          </span>
+        </span>
+      )}
+    </span>
+  );
+}
+
 function renderInlineTokens(
   text: string,
-  onCitationClick?: (source: string) => void
+  citationMap: Map<string, number>,
+  chunks?: any[],
+  onCitationClick?: (source: string, chunk?: any) => void
 ): React.ReactNode[] {
   const tokenRegex = /(\[(?:Source:)[^\]]+\]|\(Source:[^)]+\)|\*\*[^*]+\*\*|`[^`]+`|\*[^*]+\*)/gi;
   const parts = text.split(tokenRegex);
@@ -205,32 +331,39 @@ function renderInlineTokens(
   return parts.map((part, idx) => {
     if (!part) return null;
 
-    // 1. Inline Citation Badge [Source: ...] or (Source: ...)
+    // 1. Inline Citation Badge [Source: ...] or (Source: ...) -> Gemini numbered pill
     const isBracketCit = part.startsWith("[Source:") && part.endsWith("]");
     const isParenCit = part.startsWith("(Source:") && part.endsWith(")");
     if (isBracketCit || isParenCit) {
-      const citationContent = part.slice(1, -1).trim();
-      const match = citationContent.match(/Source:\s*([^,|\])]+)(?:[,|]\s*(?:Page:?|p\.?)\s*([^\])]+))?/i);
-      let displayLabel = citationContent.replace(/^Source:\s*/i, "");
-      if (match) {
-        const file = match[1].trim();
-        const page = match[2]?.trim();
-        displayLabel = page ? `${file} (p. ${page})` : file;
-      }
+      const citKey = getCitationKey(part);
+      const citNum = citationMap.get(citKey) || 1;
+
+      // Match chunk
+      const m = part.match(/Source:\s*([^,|\])]+)(?:[,|]\s*(?:Page:?|p\.?)\s*([^\])]+))?/i);
+      const fileName = m ? m[1].trim() : "";
+      const pageNum = m && m[2] ? m[2].trim() : "";
+
+      const matchedChunk =
+        chunks?.find((c) => {
+          const src = (c.source || c.metadata?.source || "").toLowerCase();
+          const p = String(c.page || c.metadata?.page || "");
+          const fileMatches = fileName && src.includes(fileName.toLowerCase());
+          const pageMatches = !pageNum || p === pageNum;
+          return fileMatches && pageMatches;
+        }) ||
+        chunks?.find((c) => {
+          const src = (c.source || c.metadata?.source || "").toLowerCase();
+          return fileName && src.includes(fileName.toLowerCase());
+        });
 
       return (
-        <span
+        <GeminiCitationChip
           key={`cit-${idx}`}
-          className="citation-inline-badge"
-          title={citationContent}
-          onClick={(e) => {
-            e.stopPropagation();
-            if (onCitationClick) onCitationClick(citationContent);
-          }}
-        >
-          <IconBook />
-          <span>{displayLabel}</span>
-        </span>
+          citationNumber={citNum}
+          citationStr={part}
+          chunk={matchedChunk}
+          onClick={() => onCitationClick && onCitationClick(part, matchedChunk)}
+        />
       );
     }
 
@@ -258,12 +391,25 @@ function renderInlineTokens(
 
 function FormattedMessage({
   text,
+  chunks,
   onCitationClick,
 }: {
   text: string;
-  onCitationClick?: (source: string) => void;
+  chunks?: any[];
+  onCitationClick?: (source: string, chunk?: any) => void;
 }) {
   if (!text) return null;
+
+  // Build unique citation map for this message
+  const citationMap = new Map<string, number>();
+  const citMatches = text.match(/\[(?:Source:)[^\]]+\]|\(Source:[^)]+\)/gi) || [];
+  let nextCitNum = 1;
+  citMatches.forEach((m) => {
+    const key = getCitationKey(m);
+    if (!citationMap.has(key)) {
+      citationMap.set(key, nextCitNum++);
+    }
+  });
 
   const lines = text.split("\n");
   const nodes: React.ReactNode[] = [];
@@ -278,7 +424,7 @@ function FormattedMessage({
       if (pText) {
         nodes.push(
           <p key={`p-${nodes.length}`}>
-            {renderInlineTokens(pText, onCitationClick)}
+            {renderInlineTokens(pText, citationMap, chunks, onCitationClick)}
           </p>
         );
       }
@@ -293,7 +439,9 @@ function FormattedMessage({
       nodes.push(
         <ListTag key={`list-${nodes.length}`}>
           {listItems.map((item, idx) => (
-            <li key={idx}>{renderInlineTokens(item, onCitationClick)}</li>
+            <li key={idx}>
+              {renderInlineTokens(item, citationMap, chunks, onCitationClick)}
+            </li>
           ))}
         </ListTag>
       );
@@ -332,14 +480,17 @@ function FormattedMessage({
       continue;
     }
 
+    // Move any mid-sentence citations cleanly to the end of the sentence or bullet
+    const normalizedLine = moveCitationsToEndOfSentences(trimmed);
+
     // Check Setext Underlines on the NEXT line (=== or ---)
     const nextLine = i + 1 < lines.length ? lines[i + 1].trim() : "";
     const isSetextH1 = /^={3,}$/.test(nextLine);
     const isSetextH2 = /^-{3,}$/.test(nextLine);
 
-    if (trimmed && (isSetextH1 || isSetextH2)) {
+    if (normalizedLine && (isSetextH1 || isSetextH2)) {
       flushAll();
-      const cleanHeader = cleanHeadingText(trimmed);
+      const cleanHeader = cleanHeadingText(normalizedLine);
       if (isSetextH1) {
         nodes.push(<h2 key={`h2-${nodes.length}`}>{cleanHeader}</h2>);
       } else {
@@ -350,20 +501,20 @@ function FormattedMessage({
     }
 
     // Solitary horizontal separator lines (====, ----, ____, ****)
-    if (/^([=\-_*])\1{2,}$/.test(trimmed)) {
+    if (/^([=\-_*])\1{2,}$/.test(normalizedLine)) {
       flushAll();
       nodes.push(<hr key={`hr-${nodes.length}`} />);
       continue;
     }
 
     // Empty lines flush paragraphs and lists
-    if (!trimmed) {
+    if (!normalizedLine) {
       flushAll();
       continue;
     }
 
     // ATX Headers (#, ##, ###, ####)
-    const headerMatch = trimmed.match(/^(#{1,6})\s+(.*)$/);
+    const headerMatch = normalizedLine.match(/^(#{1,6})\s+(.*)$/);
     if (headerMatch) {
       flushAll();
       const level = headerMatch[1].length;
@@ -379,7 +530,7 @@ function FormattedMessage({
     }
 
     // Unordered list items (*, -, •)
-    const bulletMatch = trimmed.match(/^[*•-]\s+(.*)$/);
+    const bulletMatch = normalizedLine.match(/^[*•-]\s+(.*)$/);
     if (bulletMatch) {
       flushParagraph();
       if (!currentList || currentList.type !== "ul") {
@@ -391,7 +542,7 @@ function FormattedMessage({
     }
 
     // Ordered list items (1., 2., etc.)
-    const orderedMatch = trimmed.match(/^\d+\.\s+(.*)$/);
+    const orderedMatch = normalizedLine.match(/^\d+\.\s+(.*)$/);
     if (orderedMatch) {
       flushParagraph();
       if (!currentList || currentList.type !== "ol") {
@@ -404,7 +555,7 @@ function FormattedMessage({
 
     // Regular text line -> buffer for paragraph
     flushList();
-    paragraphBuffer.push(trimmed);
+    paragraphBuffer.push(normalizedLine);
   }
 
   // Handle unclosed code block if streaming
@@ -953,11 +1104,14 @@ export default function StudyAssistantApp() {
                         ) : (
                           <FormattedMessage
                             text={msg.text}
-                            onCitationClick={(src) => {
-                              const chunkMatch = msg.chunks?.find((c) => {
-                                const s = c.source || c.metadata?.source || "";
-                                return s && src.toLowerCase().includes(s.toLowerCase());
-                              });
+                            chunks={msg.chunks}
+                            onCitationClick={(src, chunk) => {
+                              const chunkMatch =
+                                chunk ||
+                                msg.chunks?.find((c) => {
+                                  const s = c.source || c.metadata?.source || "";
+                                  return s && src.toLowerCase().includes(s.toLowerCase());
+                                });
                               setSelectedCitation(
                                 chunkMatch || { source: src, preview: "Cited in generated response." }
                               );
@@ -966,27 +1120,112 @@ export default function StudyAssistantApp() {
                         )}
                       </div>
 
-                      {/* Cited Sources List */}
-                      {msg.sources && msg.sources.length > 0 && (
-                        <div className="citations-footer">
-                          <span className="citations-label">Sources:</span>
-                          {msg.sources.map((src, i) => (
-                            <button
-                              key={i}
-                              className="citation-pill"
-                              onClick={() => {
-                                const chunkMatch = msg.chunks?.find((c) =>
-                                  src.includes(c.source || c.metadata?.source || "")
-                                );
-                                setSelectedCitation(chunkMatch || { source: src, preview: "Cited in generated response." });
-                              }}
-                            >
+                      {/* Gemini-Style Sources Deck */}
+                      {(() => {
+                        if (msg.sender === "user") return null;
+
+                        const citMatches = msg.text.match(/\[(?:Source:)[^\]]+\]|\(Source:[^)]+\)/gi) || [];
+                        const seenKeys = new Set<string>();
+                        const sourcesList: Array<{
+                          index: number;
+                          fileName: string;
+                          page: string | null;
+                          preview: string;
+                          chunk?: any;
+                          raw: string;
+                        }> = [];
+
+                        let idx = 1;
+                        citMatches.forEach((raw) => {
+                          const key = getCitationKey(raw);
+                          if (!seenKeys.has(key)) {
+                            seenKeys.add(key);
+                            const m = raw.match(/Source:\s*([^,|\])]+)(?:[,|]\s*(?:Page:?|p\.?)\s*([^\])]+))?/i);
+                            const file = m ? m[1].trim() : raw;
+                            const page = m && m[2] ? m[2].trim() : null;
+
+                            const matchedChunk =
+                              msg.chunks?.find((c) => {
+                                const src = (c.source || c.metadata?.source || "").toLowerCase();
+                                const p = String(c.page || c.metadata?.page || "");
+                                const fileMatches = file && src.includes(file.toLowerCase());
+                                const pageMatches = !page || p === page;
+                                return fileMatches && pageMatches;
+                              }) ||
+                              msg.chunks?.find((c) => {
+                                const src = (c.source || c.metadata?.source || "").toLowerCase();
+                                return file && src.includes(file.toLowerCase());
+                              });
+
+                            sourcesList.push({
+                              index: idx++,
+                              fileName: matchedChunk?.source || file,
+                              page: matchedChunk?.page || page,
+                              preview:
+                                matchedChunk?.preview ||
+                                matchedChunk?.text ||
+                                "Verified academic source document excerpt.",
+                              chunk: matchedChunk,
+                              raw,
+                            });
+                          }
+                        });
+
+                        // Fallback: if no inline citations but msg.sources exists
+                        if (sourcesList.length === 0 && msg.sources && msg.sources.length > 0) {
+                          msg.sources.forEach((src, sIdx) => {
+                            const chunkMatch = msg.chunks?.find((c) =>
+                              src.includes(c.source || c.metadata?.source || "")
+                            );
+                            sourcesList.push({
+                              index: sIdx + 1,
+                              fileName: chunkMatch?.source || src,
+                              page: chunkMatch?.page || null,
+                              preview: chunkMatch?.preview || "Verified course material.",
+                              chunk: chunkMatch,
+                              raw: src,
+                            });
+                          });
+                        }
+
+                        if (sourcesList.length === 0) return null;
+
+                        return (
+                          <div className="gemini-sources-section">
+                            <div className="gemini-sources-header">
                               <IconBook />
-                              <span>{src}</span>
-                            </button>
-                          ))}
-                        </div>
-                      )}
+                              <span>Sources</span>
+                              <span className="gemini-sources-count">{sourcesList.length}</span>
+                            </div>
+                            <div className="gemini-sources-grid">
+                              {sourcesList.map((item) => (
+                                <button
+                                  key={item.index}
+                                  type="button"
+                                  className="gemini-source-card"
+                                  onClick={() =>
+                                    setSelectedCitation(
+                                      item.chunk || { source: item.fileName, preview: item.preview }
+                                    )
+                                  }
+                                  title={`Inspect source excerpt from ${item.fileName}`}
+                                >
+                                  <div className="gemini-card-top">
+                                    <span className="gemini-card-num">{item.index}</span>
+                                    <span className="gemini-card-title">{item.fileName}</span>
+                                    {item.page && (
+                                      <span className="gemini-card-page">p. {item.page}</span>
+                                    )}
+                                  </div>
+                                  {item.preview && (
+                                    <p className="gemini-card-snippet">{item.preview}</p>
+                                  )}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      })()}
 
                       {/* Latency & Model Footer */}
                       {msg.durationMs !== undefined && (

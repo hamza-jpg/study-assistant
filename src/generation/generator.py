@@ -31,7 +31,7 @@ class StudyGenerator:
         "using exclusively the provided study material excerpts.\n\n"
         "Rules for Answering:\n"
         "1. Grounding: Rely ONLY on the facts directly stated in the context. Do NOT fabricate, assume, or extrapolate beyond what is given.\n"
-        "2. Inline Citations: Whenever you state a key fact, definition, or theorem, include an inline citation with the source and page number in the format: [Source: <filename>, Page: <page>].\n"
+        "2. Citation Placement: Whenever citing a source for a fact or concept, place the citation strictly at the END of the complete sentence or bullet item (NEVER in the middle of a sentence, clause, or between words). Format citations as: [Source: <filename>, Page: <page>].\n"
         "3. Presentation & Formatting: Present your answer with clean, elegant formatting. "
         "Use clean headings without redundant symbols or nested bold tags. "
         "Use standard bullet points for lists. "
