@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 import json
 import os
 from pathlib import Path
@@ -222,6 +223,13 @@ class FlashcardItem(BaseModel):
 class FlashcardsRequest(BaseModel):
     topic: Optional[str] = Field(None, description="Optional focus topic")
     count: int = Field(4, ge=1, le=10, description="Number of flashcards to generate")
+
+
+class ObsidianSaveRequest(BaseModel):
+    title: str = Field(..., description="Note title")
+    content: str = Field(..., description="Note markdown content")
+    folder: Optional[str] = Field("Study Notes", description="Vault subfolder")
+    tags: Optional[List[str]] = Field(default_factory=list, description="Tags list")
 
 
 # --- API Routes ---
@@ -711,6 +719,64 @@ def clear_database() -> Dict[str, Any]:
     assistant = get_assistant()
     assistant.clear()
     return {"success": True, "count": assistant.count()}
+
+
+@app.get("/api/obsidian/vault-info")
+def get_obsidian_vault_info() -> Dict[str, Any]:
+    """Return configured Obsidian Vault path and status."""
+    default_vault = Path(r"C:\Users\hamza\OneDrive\Desktop\Hub\Obsidian Vaults\Hamza")
+    vault_path_env = os.getenv("OBSIDIAN_VAULT_PATH")
+    vault_path = Path(vault_path_env) if vault_path_env else default_vault
+    exists = vault_path.exists()
+    return {
+        "vault_path": str(vault_path),
+        "vault_name": vault_path.name if exists else "Unknown",
+        "exists": exists,
+    }
+
+
+@app.post("/api/obsidian/save")
+def save_note_to_obsidian(req: ObsidianSaveRequest) -> Dict[str, Any]:
+    """Save generated study note directly into the user's local Obsidian Vault."""
+    default_vault = Path(r"C:\Users\hamza\OneDrive\Desktop\Hub\Obsidian Vaults\Hamza")
+    vault_path_env = os.getenv("OBSIDIAN_VAULT_PATH")
+    vault_path = Path(vault_path_env) if vault_path_env else default_vault
+
+    if not vault_path.exists():
+        vault_path = Path("./obsidian_vault").resolve()
+
+    target_dir = vault_path / (req.folder or "Study Notes")
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    # Sanitize title for filename
+    safe_title = re.sub(r'[\\/*?:"<>|]', "", req.title).strip() or "Study Note"
+    file_path = target_dir / f"{safe_title}.md"
+
+    note_content = req.content
+    # Prepend YAML frontmatter if not present
+    if not note_content.strip().startswith("---"):
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+        tags_yaml = "\n".join(f"  - {t.replace('#', '')}" for t in (req.tags or ["study/notes", "research"]))
+        frontmatter = (
+            f"---\n"
+            f"title: \"{safe_title}\"\n"
+            f"date: {now_str}\n"
+            f"tags:\n{tags_yaml}\n"
+            f"created_by: Maidere\n"
+            f"---\n\n"
+        )
+        note_content = frontmatter + note_content
+
+    file_path.write_text(note_content, encoding="utf-8")
+
+    return {
+        "success": True,
+        "vault": vault_path.name,
+        "folder": req.folder or "Study Notes",
+        "filename": f"{safe_title}.md",
+        "file_path": str(file_path),
+        "message": f"Saved '{safe_title}.md' to Obsidian Vault ({vault_path.name})",
+    }
 
 
 if __name__ == "__main__":

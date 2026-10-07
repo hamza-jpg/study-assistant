@@ -319,13 +319,40 @@ function GeminiCitationChip({
   );
 }
 
+function getCalloutIcon(type: string): string {
+  switch (type.toUpperCase()) {
+    case "SUMMARY":
+    case "ABSTRACT":
+    case "TLDR":
+      return "📋";
+    case "NOTE":
+      return "ℹ️";
+    case "TIP":
+    case "HINT":
+    case "IMPORTANT":
+      return "💡";
+    case "WARNING":
+    case "CAUTION":
+    case "ATTENTION":
+      return "⚠️";
+    case "INFO":
+      return "ℹ️";
+    case "DANGER":
+    case "ERROR":
+    case "FAILURE":
+      return "🛑";
+    default:
+      return "📝";
+  }
+}
+
 function renderInlineTokens(
   text: string,
   citationMap: Map<string, number>,
   chunks?: any[],
   onCitationClick?: (source: string, chunk?: any) => void
 ): React.ReactNode[] {
-  const tokenRegex = /(\[(?:Source:)[^\]]+\]|\(Source:[^)]+\)|\*\*[^*]+\*\*|`[^`]+`|\*[^*]+\*)/gi;
+  const tokenRegex = /(\[(?:Source:)[^\]]+\]|\(Source:[^)]+\)|\[\[[^\]]+\]\]|#[a-zA-Z0-9_\/-]+|\*\*[^*]+\*\*|`[^`]+`|\*[^*]+\*)/gi;
   const parts = text.split(tokenRegex);
 
   return parts.map((part, idx) => {
@@ -367,24 +394,50 @@ function renderInlineTokens(
       );
     }
 
-    // 2. Bold (strip decorative quotes inside bold like **"Logic"**)
+    // 2. Obsidian Wikilinks: [[Note Name]] or [[Folder/Note Name|Alias]]
+    if (part.startsWith("[[") && part.endsWith("]]") && part.length >= 4) {
+      const inner = part.slice(2, -2).trim();
+      const pipeParts = inner.split("|");
+      const target = pipeParts[0].trim();
+      const label = pipeParts.length > 1 ? pipeParts[1].trim() : target;
+      return (
+        <span
+          key={`wiki-${idx}`}
+          className="obsidian-wikilink"
+          title={`Obsidian Note: ${target}`}
+        >
+          [[{label}]]
+        </span>
+      );
+    }
+
+    // 3. Obsidian Nested Tags: #topic/subtopic
+    if (part.startsWith("#") && !part.startsWith("##") && part.length >= 2 && /^#[a-zA-Z0-9_\/-]+$/.test(part)) {
+      return (
+        <span key={`tag-${idx}`} className="obsidian-tag">
+          {part}
+        </span>
+      );
+    }
+
+    // 4. Bold (strip decorative quotes inside bold like **"Logic"**)
     if (part.startsWith("**") && part.endsWith("**") && part.length >= 4) {
       let boldContent = part.slice(2, -2).trim();
       boldContent = boldContent.replace(/^["'“”«»]+|["'“”«»]+$/g, "");
       return <strong key={`b-${idx}`}>{boldContent}</strong>;
     }
 
-    // 3. Inline Code
+    // 5. Inline Code
     if (part.startsWith("`") && part.endsWith("`") && part.length >= 2) {
       return <code key={`code-${idx}`}>{part.slice(1, -1)}</code>;
     }
 
-    // 4. Italic
+    // 6. Italic
     if (part.startsWith("*") && part.endsWith("*") && part.length >= 2) {
       return <em key={`em-${idx}`}>{part.slice(1, -1)}</em>;
     }
 
-    // 5. Plain text
+    // 7. Plain text
     return <React.Fragment key={`txt-${idx}`}>{part}</React.Fragment>;
   });
 }
@@ -411,7 +464,62 @@ function FormattedMessage({
     }
   });
 
-  const lines = text.split("\n");
+  // Check for YAML Frontmatter at top
+  let frontmatterNode: React.ReactNode = null;
+  let textToParse = text;
+
+  const frontmatterMatch = text.match(/^---\s*[\r\n]+([\s\S]*?)[\r\n]+---\s*[\r\n]*/);
+  if (frontmatterMatch) {
+    const yaml = frontmatterMatch[1];
+    textToParse = text.slice(frontmatterMatch[0].length);
+
+    const titleMatch = yaml.match(/title:\s*["']?([^"'\r\n]+)["']?/i);
+    const dateMatch = yaml.match(/date:\s*([^\r\n]+)/i);
+    const createdByMatch = yaml.match(/created_by:\s*([^\r\n]+)/i);
+
+    const tags: string[] = [];
+    const tagSection = yaml.match(/tags:[\s\S]*?(?=(?:[a-zA-Z0-9_]+:|$))/i);
+    if (tagSection) {
+      const tagLines = tagSection[0].match(/-[ \t]+([^\r\n]+)/g);
+      if (tagLines) {
+        tagLines.forEach((t) => tags.push(t.replace(/^-[ \t]+/, "").trim()));
+      }
+    }
+
+    frontmatterNode = (
+      <div className="obsidian-frontmatter-card" key="frontmatter">
+        <div className="frontmatter-top-bar">
+          <div className="frontmatter-title-group">
+            <span className="frontmatter-file-badge">Obsidian Note</span>
+            <h3 className="frontmatter-note-title">
+              {titleMatch ? titleMatch[1].trim() : "Study Note"}
+            </h3>
+          </div>
+          {createdByMatch && (
+            <span className="frontmatter-author-pill">
+              by <strong>{createdByMatch[1].trim()}</strong>
+            </span>
+          )}
+        </div>
+        <div className="frontmatter-meta-row">
+          {dateMatch && (
+            <span className="frontmatter-date-badge">📅 {dateMatch[1].trim()}</span>
+          )}
+          {tags.length > 0 && (
+            <div className="frontmatter-tags-list">
+              {tags.map((tg, i) => (
+                <span key={i} className="obsidian-tag-pill">
+                  #{tg.replace(/^#/, "")}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  const lines = textToParse.split("\n");
   const nodes: React.ReactNode[] = [];
   let currentList: { type: "ul" | "ol"; items: string[] } | null = null;
   let paragraphBuffer: string[] = [];
@@ -482,6 +590,46 @@ function FormattedMessage({
 
     // Move any mid-sentence citations cleanly to the end of the sentence or bullet
     const normalizedLine = moveCitationsToEndOfSentences(trimmed);
+
+    // Check for Obsidian Callouts: > [!TYPE] Optional Title
+    const calloutMatch = normalizedLine.match(/^>\s*\[!([a-zA-Z0-9_-]+)\][ \t]*(.*)$/);
+    if (calloutMatch) {
+      flushAll();
+      const calloutType = calloutMatch[1].toUpperCase();
+      const calloutTitle = calloutMatch[2].trim() || calloutType;
+      const calloutBodyLines: string[] = [];
+
+      // Collect subsequent lines starting with >
+      while (i + 1 < lines.length && lines[i + 1].trim().startsWith(">")) {
+        i++;
+        const nextBodyLine = lines[i].trim().replace(/^>\s?/, "");
+        calloutBodyLines.push(nextBodyLine);
+      }
+
+      nodes.push(
+        <div
+          key={`callout-${nodes.length}`}
+          className={`obsidian-callout callout-${calloutType.toLowerCase()}`}
+        >
+          <div className="callout-header">
+            <span className="callout-icon">{getCalloutIcon(calloutType)}</span>
+            <span className="callout-title-text">{calloutTitle}</span>
+          </div>
+          <div className="callout-body">
+            {calloutBodyLines.length > 0 ? (
+              calloutBodyLines.map((bLine, bIdx) => (
+                <p key={bIdx}>
+                  {renderInlineTokens(bLine, citationMap, chunks, onCitationClick)}
+                </p>
+              ))
+            ) : (
+              <p>{calloutTitle}</p>
+            )}
+          </div>
+        </div>
+      );
+      continue;
+    }
 
     // Check Setext Underlines on the NEXT line (=== or ---)
     const nextLine = i + 1 < lines.length ? lines[i + 1].trim() : "";
@@ -569,7 +717,12 @@ function FormattedMessage({
 
   flushAll();
 
-  return <>{nodes}</>;
+  return (
+    <>
+      {frontmatterNode}
+      {nodes}
+    </>
+  );
 }
 
 export default function StudyAssistantApp() {
@@ -605,10 +758,40 @@ export default function StudyAssistantApp() {
   const [augmentMode, setAugmentMode] = useState<"expand" | "rewrite" | "hyde">("expand");
   const [useWeb, setUseWeb] = useState(false);
   const [selectedCitation, setSelectedCitation] = useState<any | null>(null);
+  const [savedObsidianIds, setSavedObsidianIds] = useState<{ [id: string]: boolean }>({});
+  const [copiedNoteIds, setCopiedNoteIds] = useState<{ [id: string]: boolean }>({});
 
   // Retrieval configuration
   const topK = 15;
   const topN = 5;
+
+  // Save note directly to local Obsidian Vault
+  const handleSaveToObsidian = async (msg: Message) => {
+    try {
+      const titleMatch = msg.text.match(/title:\s*["']?([^"'\r\n]+)["']?/i);
+      const title = titleMatch ? titleMatch[1].trim() : "Study Note";
+
+      const res = await fetch("/api/obsidian/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title,
+          content: msg.text,
+          folder: "Study Notes",
+          tags: ["study/notes", "research"],
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setSavedObsidianIds((prev) => ({ ...prev, [msg.id]: true }));
+        setTimeout(() => {
+          setSavedObsidianIds((prev) => ({ ...prev, [msg.id]: false }));
+        }, 4000);
+      }
+    } catch (err) {
+      console.error("Failed to save to Obsidian Vault:", err);
+    }
+  };
 
   // Materials state
   const [documents, setDocuments] = useState<DocItem[]>([]);
@@ -1231,6 +1414,40 @@ export default function StudyAssistantApp() {
                       {msg.durationMs !== undefined && (
                         <div style={{ marginTop: "10px", fontSize: "11.5px", color: "var(--text-muted)" }}>
                           Generated in {msg.durationMs}ms via {msg.model || status.provider}
+                        </div>
+                      )}
+
+                      {/* Obsidian Quick Actions */}
+                      {msg.sender === "tutor" && msg.text && (
+                        <div className="obsidian-action-row">
+                          <button
+                            type="button"
+                            className={`obsidian-btn ${savedObsidianIds[msg.id] ? "saved" : ""}`}
+                            onClick={() => handleSaveToObsidian(msg)}
+                            title="Save note directly to local Obsidian Vault (Hamza)"
+                          >
+                            <span>
+                              {savedObsidianIds[msg.id]
+                                ? "✓ Saved to Obsidian (Hamza)"
+                                : "📥 Save to Obsidian Vault"}
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            className="obsidian-btn"
+                            onClick={() => {
+                              navigator.clipboard.writeText(msg.text);
+                              setCopiedNoteIds((prev) => ({ ...prev, [msg.id]: true }));
+                              setTimeout(() => {
+                                setCopiedNoteIds((prev) => ({ ...prev, [msg.id]: false }));
+                              }, 2500);
+                            }}
+                            title="Copy full Obsidian Markdown to clipboard"
+                          >
+                            <span>
+                              {copiedNoteIds[msg.id] ? "✓ Copied!" : "📋 Copy Note (.md)"}
+                            </span>
+                          </button>
                         </div>
                       )}
                     </div>
