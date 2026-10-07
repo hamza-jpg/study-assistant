@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 
 from src.assistant import StudyAssistant
+from src.api.internal_routes import internal_router
 
 # Load environment configuration
 load_dotenv(".env.local")
@@ -26,6 +27,9 @@ app = FastAPI(
     description="Grounded Academic RAG Tutor API powered by NVIDIA NIM and Nebius AI Studio",
     version="1.0.0",
 )
+
+# Mount internal microservice router for Spring Boot integration
+app.include_router(internal_router)
 
 # Enable CORS for Next.js frontend
 app.add_middleware(

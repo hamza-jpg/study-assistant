@@ -33,6 +33,15 @@ frontend/node_modules/
 
 # Local user data & uploads
 data/
+uploads/
 .logs/
 *.log
+
+# Java & Maven build
+target/
+**/target/
+*.class
+.idea/
+*.iml
+
 
