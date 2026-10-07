@@ -16,12 +16,18 @@ class DocumentLoader:
     def __init__(
         self,
         vision_describer: Optional[VisionDescriber] = None,
-        extract_visuals: bool = True,
+        extract_visuals: Optional[bool] = None,
     ):
-        self.extract_visuals = extract_visuals
+        if extract_visuals is not None:
+            self.extract_visuals = extract_visuals
+        elif vision_describer is not None:
+            self.extract_visuals = True
+        else:
+            self.extract_visuals = os.getenv("ENABLE_VISION", "false").lower() in ("true", "1", "yes")
+
         if vision_describer is not None:
             self.vision_describer = vision_describer
-        elif extract_visuals:
+        elif self.extract_visuals:
             try:
                 self.vision_describer = VisionDescriber()
             except Exception:
