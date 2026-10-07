@@ -38,6 +38,7 @@ class StudyRetriever:
         score_threshold: Optional[float] = None,
         augment: bool = False,
         augment_mode: str = "expand",
+        course_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Retrieve the most relevant document chunks for a natural language query.
 
@@ -48,6 +49,7 @@ class StudyRetriever:
             score_threshold: Optional minimum similarity threshold for filtering low-relevance chunks.
             augment: If True, uses the QueryAugmenter to expand or rewrite query before retrieval.
             augment_mode: Augmentation strategy ('expand', 'rewrite', 'hyde').
+            course_id: Multi-tenancy course filter for isolated retrieval.
 
         Returns:
             List of ranked chunk dictionaries containing id, text, metadata, distance, and similarity_score.
@@ -60,6 +62,7 @@ class StudyRetriever:
                 top_k=top_k,
                 where=where,
                 score_threshold=score_threshold,
+                course_id=course_id,
             )
 
         # 1. Safely handle empty or whitespace-only queries
@@ -73,12 +76,21 @@ class StudyRetriever:
         # 3. Vectorize query using NVIDIA NIM model (embed_query automatically uses input_type='query')
         query_vector = self.embedder.embed_query(query.strip())
 
-        # 4. Query vector store (ChromaDB) for top nearest neighbors
-        raw_results = self.indexer.query(
-            query_embedding=query_vector,
-            top_k=limit,
-            where=where,
-        )
+        # 4. Query vector store (ChromaDB or PgVector) for top nearest neighbors
+        query_kwargs: Dict[str, Any] = {
+            "query_embedding": query_vector,
+            "top_k": limit,
+            "where": where,
+        }
+        if course_id is not None:
+            query_kwargs["course_id"] = course_id
+
+        try:
+            raw_results = self.indexer.query(**query_kwargs)
+        except TypeError:
+            # Fallback if indexer does not accept course_id
+            query_kwargs.pop("course_id", None)
+            raw_results = self.indexer.query(**query_kwargs)
 
         # 5. Enrich results: convert cosine distance to similarity score [0.0, 1.0]
         enriched_results: List[Dict[str, Any]] = []
@@ -107,6 +119,7 @@ class StudyRetriever:
         top_k: Optional[int] = None,
         where: Optional[Dict[str, Any]] = None,
         score_threshold: Optional[float] = None,
+        course_id: Optional[str] = None,
         **kwargs,
     ) -> List[Dict[str, Any]]:
         """Retrieve chunks using query augmentation (multi-query expansion, rewrite, or HyDE).
@@ -120,6 +133,7 @@ class StudyRetriever:
             top_k: Maximum number of merged chunks to return.
             where: Metadata filter.
             score_threshold: Minimum similarity score threshold.
+            course_id: Multi-tenancy course filter.
             **kwargs: Additional parameters passed to QueryAugmenter.augment() (e.g. num_queries).
 
         Returns:
@@ -139,6 +153,7 @@ class StudyRetriever:
                 where=where,
                 score_threshold=threshold,
                 augment=False,
+                course_id=course_id,
             )
 
         # 1. Generate augmented query variations
@@ -157,6 +172,7 @@ class StudyRetriever:
                 where=where,
                 score_threshold=None,  # Filter threshold after pooling
                 augment=False,
+                course_id=course_id,
             )
 
             for chunk in sub_results:

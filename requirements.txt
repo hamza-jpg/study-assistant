@@ -1,5 +1,7 @@
-# --- Vector Database ---
+# --- Vector Database & PostgreSQL ---
 chromadb>=0.5.0
+psycopg[binary]>=3.2.0
+pgvector>=0.3.0
 # --- Document Parsing & Chunking ---
 pypdf>=4.0.0
 pillow>=10.0.0
